@@ -9,6 +9,8 @@ from http import HTTPStatus
 
 from json.decoder import JSONDecodeError
 
+from telegram.ext import Updater
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -118,6 +120,8 @@ def main():
     logger.setLevel(logging.DEBUG)
     handler = logging.StreamHandler(stream=sys.stdout)
     logger.addHandler(handler)
+    updater = Updater(token=TELEGRAM_TOKEN)
+    updater.start_polling(poll_interval=600.0)
     check_tokens()
     while True:
         try:
