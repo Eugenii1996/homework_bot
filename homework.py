@@ -21,26 +21,31 @@ HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 TOKENS = ('PRACTICUM_TOKEN', 'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID')
 GET_API_ANSWER_STATUS_ERROR_MASSAGE = (
     'При обращении к эндпоинту {endpoint}'
-    ' с заголовком {header} от даты {timestamp} '
+    ' с заголовком {header} и параметрами {params} '
     'возникла ошибка, код ответа {status_code}.'
 )
-GET_API_ANSWER_CONNECTION_ERROR_MASSAGE = (
+CONNECTION_ERROR = (
     'Ошибка обращения к API: {error} c эндпоинтом '
-    '{enpoint} и заголовком {header} от даты {timestamp}'
+    '{enpoint}, заголовком {header} и параметрами {params}'
+)
+KEY_ERROR = (
+    'Получен json со значением {value} по ключу {key}, с эндпоинтом '
+    '{enpoint}, заголовком {header} и параметрами {params}'
 )
 PARSE_STATUS_MASSAGE = (
     'Получен неожиданный статус {status} проверки домашней работы'
 )
 PARSE_STATUS_CHANGE_MESSAGE = (
-    'Изменился статус проверки работы "{homework_name}". '
+    'Изменился статус проверки работы "{name}". '
     '{verdict}'
 )
-SEND_MESSAGE = 'Ошибка отправки сообщения {message}: {error}'
+SEND_MESSAGE_ERROR = 'Ошибка отправки сообщения {message}: {error}'
 CHECK_RESPONCE_NOT_DICT = 'В ответе API отсутствует словарь'
 CHECK_RESPONCE_KEY_NO_IN_RESPONSE = 'Ключ "homeworks" не найден'
 CHECK_RESPONCE_KEY_NOT_LIST = 'Значение для ключа "homeworks" не список'
 CHECK_TOKENS_MESSAGE = 'Переменная окружения {name} не найдена либо пуста!'
 MAIN_EXCEPTION_MASSAGE = 'Сбой в работе программы: {error}'
+TOKENS_ERROR = 'Недостаточно переменных окружения для работы программы'
 
 
 HOMEWORK_VERDICTS = {
@@ -56,10 +61,9 @@ def send_message(bot, message):
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
         logging.info(message)
         return True
-    except Exception as error:
-        raise ConnectionError(
-            SEND_MESSAGE.format(message=message, error=error)
-        )
+    except (telegram.error.TelegramError, Exception) as error:
+        logging.error(SEND_MESSAGE_ERROR.format(message=message, error=error))
+        return False
 
 
 def get_api_answer(timestamp):
@@ -69,22 +73,31 @@ def get_api_answer(timestamp):
             ENDPOINT, headers=HEADERS, params={'from_date': timestamp}
         )
     except requests.exceptions.RequestException as error:
-        raise ConnectionError(GET_API_ANSWER_CONNECTION_ERROR_MASSAGE.format(
-            error=error, enpoint=ENDPOINT, header=HEADERS, timestamp=timestamp
+        raise ConnectionError(CONNECTION_ERROR.format(
+            error=error,
+            enpoint=ENDPOINT,
+            header=HEADERS,
+            params={'from_date': timestamp}
         ))
     if response.status_code != HTTPStatus.OK:
         raise ValueError(
             GET_API_ANSWER_STATUS_ERROR_MASSAGE.format(
                 endpoint=ENDPOINT,
                 header=HEADERS,
-                timestamp=timestamp,
+                params={'from_date': timestamp},
                 status_code=response.status_code
             )
         )
-    if 'code' in response.json():
-        raise ValueError('Сервер вернул некорректный json.')
-    if 'error' in response.json():
-        raise ValueError('Сервер вернул некорректный json.')
+    keys = ['code', 'error']
+    for key in keys:
+        if key in response.json():
+            raise ValueError(KEY_ERROR.format(
+                key=key,
+                value=response.json().get(key),
+                endpoint=ENDPOINT,
+                header=HEADERS,
+                params={'from_date': timestamp},
+            ))
     return response.json()
 
 
@@ -101,24 +114,26 @@ def check_response(response):
 
 def parse_status(homework):
     """Получение статуса конкретной домашней работы."""
-    homework_name = homework.get('homework_name')
+    name = homework['homework_name']
     status = homework['status']
     if status not in HOMEWORK_VERDICTS:
-        raise KeyError(PARSE_STATUS_MASSAGE.format(status=status))
+        raise ValueError(PARSE_STATUS_MASSAGE.format(status=status))
     return PARSE_STATUS_CHANGE_MESSAGE.format(
-        homework_name=homework_name,
+        name=name,
         verdict=HOMEWORK_VERDICTS[status]
     )
 
 
 def check_tokens():
     """Проверка доступности переменных окружения."""
-    tokens = []
     for name in TOKENS:
         token = globals()[name]
         if token is None or token == '':
             logging.critical(CHECK_TOKENS_MESSAGE.format(name=name))
-            tokens.append(token)
+    tokens = [
+        globals()[token] for token in TOKENS
+        if globals()[token] is None or globals()[token] == ''
+    ]
     if len(tokens) == 0:
         return True
     return False
@@ -127,7 +142,7 @@ def check_tokens():
 def main():
     """Основная логика работы бота."""
     if check_tokens() is False:
-        sys.exit(1)
+        raise ValueError(TOKENS_ERROR)
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
     old_massage = ''
@@ -136,15 +151,13 @@ def main():
             response = get_api_answer(timestamp)
             homeworks = check_response(response)
             if len(homeworks) != 0:
-                homework = homeworks[0]
-                message = parse_status(homework)
-                send_message(bot, message)
+                send_message(bot, parse_status(homeworks[0]))
             timestamp = response.get('current_date', timestamp)
         except Exception as error:
             message = MAIN_EXCEPTION_MASSAGE.format(error=error)
             logging.exception(message)
             if message != old_massage:
-                if send_message(bot, message) is True:
+                if send_message(bot, message):
                     old_massage = message
         time.sleep(RETRY_TIME)
 
