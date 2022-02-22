@@ -19,7 +19,7 @@ RETRY_TIME = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 TOKENS = ('PRACTICUM_TOKEN', 'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID')
-GET_API_ANSWER_STATUS_ERROR_MASSAGE = (
+GET_API_ANSWER_STATUS_ERROR_MESSAGE = (
     'При обращении к эндпоинту {endpoint}'
     ' с заголовком {header} и параметрами {params} '
     'возникла ошибка, код ответа {status_code}.'
@@ -32,7 +32,7 @@ KEY_ERROR = (
     'Получен json со значением {value} по ключу {key}, с эндпоинтом '
     '{enpoint}, заголовком {header} и параметрами {params}'
 )
-PARSE_STATUS_MASSAGE = (
+PARSE_STATUS_MESSAGE = (
     'Получен неожиданный статус {status} проверки домашней работы'
 )
 PARSE_STATUS_CHANGE_MESSAGE = (
@@ -43,8 +43,8 @@ SEND_MESSAGE_ERROR = 'Ошибка отправки сообщения {message}
 CHECK_RESPONCE_NOT_DICT = 'В ответе API отсутствует словарь'
 CHECK_RESPONCE_KEY_NO_IN_RESPONSE = 'Ключ "homeworks" не найден'
 CHECK_RESPONCE_KEY_NOT_LIST = 'Значение для ключа "homeworks" не список'
-CHECK_TOKENS_MESSAGE = 'Переменная окружения {name} не найдена либо пуста!'
-MAIN_EXCEPTION_MASSAGE = 'Сбой в работе программы: {error}'
+CHECK_TOKENS_MESSAGE = 'Переменные окружения {names} не найдены либо пусты!'
+MAIN_EXCEPTION_MESSAGE = 'Сбой в работе программы: {error}'
 TOKENS_ERROR = 'Недостаточно переменных окружения для работы программы'
 
 
@@ -68,37 +68,38 @@ def send_message(bot, message):
 
 def get_api_answer(timestamp):
     """Отправка запроса к эндпоинту API-сервиса."""
+    params = {'from_date': timestamp}
     try:
         response = requests.get(
-            ENDPOINT, headers=HEADERS, params={'from_date': timestamp}
+            ENDPOINT, headers=HEADERS, params=params
         )
     except requests.exceptions.RequestException as error:
         raise ConnectionError(CONNECTION_ERROR.format(
             error=error,
             enpoint=ENDPOINT,
             header=HEADERS,
-            params={'from_date': timestamp}
+            params=params
         ))
     if response.status_code != HTTPStatus.OK:
         raise ValueError(
-            GET_API_ANSWER_STATUS_ERROR_MASSAGE.format(
+            GET_API_ANSWER_STATUS_ERROR_MESSAGE.format(
                 endpoint=ENDPOINT,
                 header=HEADERS,
-                params={'from_date': timestamp},
+                params=params,
                 status_code=response.status_code
             )
         )
-    keys = ['code', 'error']
-    for key in keys:
-        if key in response.json():
+    server_responce = response.json()
+    for key in ['code', 'error']:
+        if key in server_responce:
             raise ValueError(KEY_ERROR.format(
                 key=key,
-                value=response.json().get(key),
+                value=server_responce.get(key),
                 endpoint=ENDPOINT,
                 header=HEADERS,
-                params={'from_date': timestamp},
+                params=params,
             ))
-    return response.json()
+    return server_responce
 
 
 def check_response(response):
@@ -117,7 +118,7 @@ def parse_status(homework):
     name = homework['homework_name']
     status = homework['status']
     if status not in HOMEWORK_VERDICTS:
-        raise ValueError(PARSE_STATUS_MASSAGE.format(status=status))
+        raise ValueError(PARSE_STATUS_MESSAGE.format(status=status))
     return PARSE_STATUS_CHANGE_MESSAGE.format(
         name=name,
         verdict=HOMEWORK_VERDICTS[status]
@@ -126,26 +127,19 @@ def parse_status(homework):
 
 def check_tokens():
     """Проверка доступности переменных окружения."""
-    for name in TOKENS:
-        token = globals()[name]
-        if token is None or token == '':
-            logging.critical(CHECK_TOKENS_MESSAGE.format(name=name))
-    tokens = [
-        globals()[token] for token in TOKENS
-        if globals()[token] is None or globals()[token] == ''
-    ]
-    if len(tokens) == 0:
-        return True
-    return False
+    tokens = [token for token in TOKENS if not globals()[token]]
+    if tokens:
+        logging.critical(CHECK_TOKENS_MESSAGE.format(names=tokens))
+    return not tokens
 
 
 def main():
     """Основная логика работы бота."""
-    if check_tokens() is False:
+    if not check_tokens():
         raise ValueError(TOKENS_ERROR)
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
-    old_massage = ''
+    old_message = ''
     while True:
         try:
             response = get_api_answer(timestamp)
@@ -154,11 +148,11 @@ def main():
                 send_message(bot, parse_status(homeworks[0]))
             timestamp = response.get('current_date', timestamp)
         except Exception as error:
-            message = MAIN_EXCEPTION_MASSAGE.format(error=error)
+            message = MAIN_EXCEPTION_MESSAGE.format(error=error)
             logging.exception(message)
-            if message != old_massage:
+            if message != old_message:
                 if send_message(bot, message):
-                    old_massage = message
+                    old_message = message
         time.sleep(RETRY_TIME)
 
 
